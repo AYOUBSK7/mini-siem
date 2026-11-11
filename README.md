@@ -1,189 +1,128 @@
-# Mini-SIEM : détecter des attaques web dans des journaux nginx
+# Mini-SIEM
 
-Projet personnel (2026) qui relie **données**, **cybersécurité** et **développement** :
-des journaux de connexion nginx sont chargés par un **ETL Python** dans un **entrepôt
-PostgreSQL en étoile**, analysés par **5 règles de détection testées**, puis exposés par
-une **API FastAPI** et un **dashboard Streamlit**. Tout se lance avec Docker Compose.
+Un petit SIEM fait maison pour détecter des attaques web simples dans les logs d'un serveur nginx.
 
-> ⚠️ **Projet éducatif.** Toutes les attaques sont simulées **uniquement contre un
-> laboratoire local** (OWASP Juice Shop, application volontairement vulnérable) sur
-> `127.0.0.1`. Le script de test refuse toute autre cible. Attaquer un système sans
-> autorisation écrite est illégal. Ce projet n'est ni un outil de pentest ni un vrai SOC.
+Je voulais relier deux choses qui m'intéressent : les bases de données (ETL, entrepôt en étoile)
+et la cybersécurité. L'idée : envoyer du trafic normal et des attaques contre une application
+volontairement vulnérable, récupérer les logs nginx, les charger dans PostgreSQL, puis voir ce
+qu'on arrive à détecter avec quelques règles simples.
 
-![Dashboard : chiffres clés, alertes par type et par heure](docs/captures/1_dashboard_vue_ensemble.png)
+> Projet éducatif : tout tourne en local (`127.0.0.1`), contre OWASP Juice Shop.
+> Le script d'attaque refuse toute autre cible.
 
-| | |
-|---|---|
-| **Stack** | Docker Compose, nginx, OWASP Juice Shop, Python 3.12 (pandas, requests), PostgreSQL 16, FastAPI, Streamlit, Plotly, pytest |
-| **Volume testé** | 882 requêtes, 21 IP, 83 alertes (dont 33 hautes) |
-| **Tests** | 30 tests pytest (22 sur les règles, 8 sur l'API) |
+![Dashboard](docs/captures/1_dashboard_vue_ensemble.png)
 
-## Architecture
+## Comment ça marche
 
-```mermaid
-flowchart LR
-    A[attack_sim.py<br/>trafic normal + 5 attaques<br/>127.0.0.1 seulement] --> N[nginx<br/>reverse proxy :8080]
-    N --> J[OWASP Juice Shop<br/>non exposé]
-    N -- écrit --> L[(logs/access.log)]
-    subgraph pipeline ["pipeline (à la demande)"]
-        E[etl.py<br/>lecture, regex,<br/>décodage URL] --> D[detect.py<br/>règles R1 à R5]
-    end
-    L --> E
-    E --> S[(PostgreSQL<br/>staging → dw étoile)]
-    D --> S
-    S --> API[FastAPI :8000<br/>/alertes /stats]
-    API --> DB[Dashboard<br/>Streamlit :8501]
+```
+attack_sim.py -> nginx (devant Juice Shop) -> logs/access.log
+              -> etl.py -> PostgreSQL (staging, puis schéma en étoile)
+              -> detect.py -> table des alertes
+              -> API FastAPI -> dashboard Streamlit
 ```
 
-1. `attack_sim.py` envoie du trafic normal et des attaques simulées au labo.
-2. **nginx** transmet les requêtes à Juice Shop et écrit une ligne par requête dans `access.log`.
-3. `etl.py` lit le journal, découpe chaque ligne, **décode les URL** (`%27` → `'`) et charge
-   `staging.access_log`, puis remplit le schéma en étoile `dw`.
-4. `detect.py` applique les règles et écrit la table `dw.alerte`.
-5. **FastAPI** expose les alertes ; **Streamlit** les affiche (sans connaître le mot de passe de la base).
+- `app/attack_sim.py` envoie du trafic normal et 5 types d'attaques. Il vérifie d'abord que la cible est bien localhost.
+- `app/etl.py` lit `access.log` avec une regex, décode les URL (`%27` devient `'`) et charge
+  `staging.access_log`, puis le schéma en étoile : une table de faits `fait_requete`
+  (une ligne = une requête) et quatre dimensions (temps, IP, URL, statut).
+- `app/detect.py` applique les règles et remplit `dw.alerte`.
+- `app/api.py` expose `/alertes` et `/stats` ; `dashboard/dashboard.py` les affiche.
 
-## Démarrage rapide
+Quelques requêtes d'analyse sont dans [`sql/requetes_analyse.sql`](sql/requetes_analyse.sql)
+(404 par IP et par minute, top 10 des IP, alertes par règle et par heure).
 
-**Prérequis :** Docker Desktop, Python 3.12, Git.
+## Lancer le projet
+
+Il faut Docker Desktop, Python 3.12 et Git.
 
 ```bash
 git clone https://github.com/AYOUBSK7/mini-siem.git
 cd mini-siem
-copy .env.example .env          # Linux / macOS : cp .env.example .env
+copy .env.example .env
 ```
-Ouvrir `.env` et remplacer `changez_moi` par un mot de passe de votre choix.
+
+Dans `.env`, remplacer `changez_moi` par un mot de passe (sous Linux / macOS : `cp` au lieu de `copy`).
 
 ```bash
-# 1. Lancer le labo, l'API et le dashboard (premier lancement : environ 8 min de téléchargement)
-docker compose up -d --build
+docker compose up -d --build          # labo + API + dashboard (le premier lancement est long)
 
-# 2. Installer Python pour le script de trafic et les tests
 python -m venv .venv
-.venv\Scripts\activate          # Linux / macOS : source .venv/bin/activate
+.venv\Scripts\activate                # Linux / macOS : source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Générer du trafic normal + les 5 attaques (moins d'une minute)
-python app/attack_sim.py
-
-# 4. ETL + détection
-docker compose run --rm pipeline
-
-# 5. Lancer les tests
-python -m pytest
+python app/attack_sim.py              # génère le trafic
+docker compose run --rm pipeline      # ETL + détection
+python -m pytest                      # les tests
 ```
 
-| Adresse | Contenu |
-|---|---|
-| http://127.0.0.1:8501 | Dashboard |
-| http://127.0.0.1:8000/docs | API (documentation interactive) |
-| http://127.0.0.1:8080 | Juice Shop, via nginx |
+Ensuite :
 
-Tous les ports sont liés à `127.0.0.1` : rien n'est accessible depuis le réseau.
-Pour tout arrêter : `docker compose down`.
+- dashboard : http://127.0.0.1:8501
+- API : http://127.0.0.1:8000/docs
+- Juice Shop (via nginx) : http://127.0.0.1:8080
 
-## Règles de détection
+Les ports ne sont ouverts que sur `127.0.0.1`. Pour tout arrêter : `docker compose down`.
 
-| Règle | Scénario simulé | Détection | Gravité | OWASP 2021 |
-|---|---|---|---|---|
-| **R1** brute force | 20 connexions échouées | plus de 10 réponses **401** sur `/rest/user/login`, même IP, même minute | haute | A07 Authentification |
-| **R2** injection SQL | `' OR 1=1--`, `UNION SELECT`… | motifs SQL dans l'URL décodée → haute ; apostrophe seule → faible | haute / faible | A03 Injection |
-| **R3** XSS | `<script>`, `<iframe src="javascript:…">` | balises HTML, `javascript:`, `onerror=` | moyenne | A03 Injection |
-| **R4** scan | 100 pages inexistantes | plus de 30 réponses **404**, même IP, même minute | moyenne | Reconnaissance |
-| **R5** remontée de dossiers | `..%2F`, `%252e%252e%252f`, `....//` | `../` après **double décodage** | haute | A01 Contrôle d'accès |
+![Documentation de l'API](docs/captures/3_api_swagger.png)
 
-Chaque règle a ses tests pytest : au moins une ligne de journal qui **doit** déclencher
-l'alerte, une ligne normale qui ne doit **pas**, et les seuils testés à la limite
-(10 échecs → rien, 11 → alerte).
+## Les règles
 
-![Tests pytest](docs/captures/4_tests_pytest.png)
+- **R1 brute force** : plus de 10 réponses 401 sur `/rest/user/login` pour la même IP en une minute.
+- **R2 injection SQL** : motifs comme `' OR 1=1`, `UNION SELECT` ou `--` dans l'URL décodée.
+  Une apostrophe seule donne une alerte de gravité faible.
+- **R3 XSS** : `<script`, `javascript:`, `onerror=`…
+- **R4 scan** : plus de 30 réponses 404 pour la même IP en une minute.
+- **R5 remontée de dossiers** : `../` dans l'URL, même encodé deux fois (`%252e%252e%252f`).
 
-## Modèle de données
+Chaque règle a ses tests dans `tests/test_rules.py` : au moins une ligne de log qui doit
+déclencher l'alerte et une ligne normale qui ne doit pas. L'API a aussi ses tests
+(`tests/test_api.py`), dont un qui vérifie qu'on ne peut pas faire d'injection SQL via ses filtres.
 
-```mermaid
-erDiagram
-    dim_temps  ||--o{ fait_requete : "quand ?"
-    dim_ip     ||--o{ fait_requete : "qui ?"
-    dim_url    ||--o{ fait_requete : "quoi ?"
-    dim_statut ||--o{ fait_requete : "résultat ?"
-    dim_ip     ||--o{ alerte       : "qui attaque ?"
-```
+![Tests](docs/captures/4_tests_pytest.png)
 
-- `staging.access_log` : une ligne du journal découpée en colonnes (avec la ligne brute, comme preuve).
-- `dw.fait_requete` : **grain = 1 requête HTTP** ; mesures : taille, nombre de requêtes.
-- Dimensions : `dim_temps` (à la minute), `dim_ip`, `dim_url` (famille api / static / ftp / autre), `dim_statut`.
-- `dw.alerte` : règle, catégorie OWASP, IP, heure, gravité, preuve.
+## Résultats
 
-Exemples d'analyses dans [`sql/requetes_analyse.sql`](sql/requetes_analyse.sql) :
-404 par IP et par minute, top 10 des IP, alertes par règle et par heure.
+Sur mon dernier jeu de test (882 requêtes, dont 575 de visiteurs normaux), il y a 83 alertes.
+Chaque IP attaquante est trouvée par la bonne règle, et aucune alerte de gravité haute ne
+tombe sur un visiteur normal.
 
-![Dashboard : top 10 des IP et dernières alertes](docs/captures/2_dashboard_ip_et_alertes.png)
+Par contre, les 36 recherches « l'orange » déclenchent R2 en gravité faible à cause de
+l'apostrophe. J'ai préféré les garder en alerte faible plutôt que d'ignorer les apostrophes,
+sinon des injections simples passeraient. Le détail est dans le [rapport](docs/rapport.pdf).
 
-## Résultats sur le laboratoire
-
-| Règle | Alertes | Verdict |
-|---|---|---|
-| R1 | 2 | ✅ les 2 scénarios détectés, aucune sur les erreurs isolées des visiteurs |
-| R2 haute | 8 | ✅ toutes les injections détectées |
-| R2 faible | 36 | ⚠️ **faux positifs** : 36 recherches `l'orange` de visiteurs normaux |
-| R3 | 12 | ✅ |
-| R4 | 2 | ✅ 80 × 404 par minute pour le scanner, 3 au maximum pour un visiteur |
-| R5 | 23 | ✅ mais 13 attribuées à l'IP de Docker (voir limites) |
-
-**Aucune alerte haute ne vise un visiteur normal.** Les faux positifs sont tous en gravité
-faible, et c'est un choix assumé : une apostrophe seule est souvent légitime, mais l'ignorer
-laisserait passer des injections simples.
+![Alertes](docs/captures/2_dashboard_ip_et_alertes.png)
 
 ## Limites
 
-- **Seule l'adresse est visible.** nginx n'écrit pas le corps des requêtes POST : une
-  injection envoyée dans un formulaire est invisible, et le brute force n'est détecté que
-  par les statuts 401.
-- **IP simulées.** Tout le trafic vient de mon PC ; des IP fictives sont envoyées dans
-  l'en-tête `X-Forwarded-For`, que nginx accepte de n'importe qui. C'est acceptable en
-  labo, mais dangereux en production.
-- **Mauvaise IP pour certaines traversées.** Quand le chemin sort de la racine du site,
-  nginx répond 400 **avant de lire les en-têtes** : la requête est journalisée avec l'IP
-  de Docker (`172.22.0.1`).
-- **Fenêtre fixe d'une minute** pour R1 et R4 : 8 échecs à 16:49:55 puis 8 à 16:50:05 ne
-  déclenchent rien. Amélioration possible : une fenêtre glissante de 60 s.
-- **R4 ne voit que les 404.** Juice Shop renvoie 200 pour une page inconnue comme
-  `/admin.php`, donc 20 % du scan n'est pas compté.
-- **Traitement par lots**, pas de temps réel ; une alerte par requête suspecte (pas de
-  regroupement) ; on ne décode que deux fois l'URL.
+- nginx n'écrit pas le corps des requêtes POST : une injection envoyée dans un formulaire ne se voit pas.
+- Les IP sont simulées avec l'en-tête `X-Forwarded-For`, que nginx accepte de n'importe qui.
+  C'est pratique en labo, mais à ne pas faire en production.
+- Quand un chemin sort de la racine du site (`/../../etc/passwd`), nginx répond 400 avant de lire
+  les en-têtes : la ligne de log a alors l'IP de Docker, pas celle de l'attaquant.
+- R1 et R4 comptent par minute fixe (pas de fenêtre glissante) : 8 échecs à 16:49:55 puis 8 à
+  16:50:05 ne déclenchent rien.
+- Juice Shop répond 200 pour une page inconnue comme `/admin.php`, donc R4 ne voit qu'une
+  partie d'un scan.
+- Tout est en traitement par lots, pas en temps réel.
 
-## Structure du dépôt
+Pistes pour la suite : une fenêtre glissante de 60 s, compter aussi les 403, journaliser le
+corps des POST de connexion, comparer avec un scan OWASP ZAP.
+
+## Structure
 
 ```
 mini-siem/
-├── docker-compose.yml        labo + api + dashboard + pipeline
-├── Dockerfile                image Python commune
-├── .env.example              modèle de configuration (sans vrai mot de passe)
-├── nginx/nginx.conf          reverse proxy + format du journal
-├── app/
-│   ├── attack_sim.py         trafic de test (127.0.0.1 seulement)
-│   ├── etl.py                access.log → staging → étoile
-│   ├── detect.py             règles R1 à R5
-│   └── api.py                FastAPI
-├── dashboard/dashboard.py    Streamlit
-├── sql/                      schema.sql, staging_vers_dw.sql, requetes_analyse.sql
-├── tests/                    test_rules.py, test_api.py
-└── docs/                     rapport.pdf, GUIDE.md, captures/
+├── docker-compose.yml
+├── Dockerfile
+├── .env.example
+├── nginx/nginx.conf
+├── app/            attack_sim.py, etl.py, detect.py, api.py
+├── dashboard/      dashboard.py
+├── sql/            schema.sql, staging_vers_dw.sql, requetes_analyse.sql
+├── tests/          test_rules.py, test_api.py
+└── docs/           rapport.pdf, captures/
 ```
 
-## Documentation
-
-- [`docs/rapport.pdf`](docs/rapport.pdf) : rapport d'une page (méthode, résultats, limites).
-- [`docs/GUIDE.md`](docs/GUIDE.md) : explication détaillée de chaque étape, des choix
-  techniques et des problèmes rencontrés.
-
-![API FastAPI : documentation interactive](docs/captures/3_api_swagger.png)
-
-## Sécurité et éthique
-
-- Aucun mot de passe dans le code : `.env` est ignoré par Git, `.dockerignore` l'exclut
-  des images, et le dashboard n'y a pas accès.
-- L'API utilise des **requêtes SQL paramétrées** (testé : `?ip=' OR 1=1--` ne renvoie rien).
-- Tests uniquement sur un système qui m'appartient ; aucune donnée personnelle réelle.
-
 ---
-*Auteur : Ayoub BOUSSOUKAYA*
+
+Ayoub BOUSSOUKAYA, projet personnel, 2026
