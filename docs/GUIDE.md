@@ -616,3 +616,63 @@ et le dashboard affiche ce message. Testé dans `test_api.py` en simulant l'erre
 - Dans Docker : pipeline → 516 lignes, 55 alertes (mêmes chiffres que hors Docker),
   `/stats` répond, 29 tests passent dans le conteneur (30 sur le PC avec le test
   « tables absentes » ajouté ensuite), aucun message d'erreur dans le journal du dashboard.
+
+---
+
+## Étape 8 : README, captures et rapport
+
+### Ce qu'on a fait
+- **Du trafic à une autre heure** (21h UTC) pour que « Alertes par heure » ait plusieurs
+  barres → 882 requêtes, 83 alertes. Résultat : les 2 brute force et les 2 scans sont
+  bien détectés deux fois, aucune alerte haute sur un visiteur.
+- **Un bug trouvé grâce aux captures** : les heures s'affichaient dans le désordre
+  (16h, 21h, 17h). Plotly range les valeurs texte dans l'ordre où il les rencontre,
+  règle par règle ; R1 n'avait pas d'alerte à 17h, donc 17h arrivait en dernier.
+  Correction : trier sur la vraie date **avant** de la transformer en texte, et donner
+  l'ordre à Plotly (`category_orders`).
+- **4 captures** dans `docs/captures/` : vue d'ensemble du dashboard, top 10 + dernières
+  alertes, documentation de l'API, résultat des 30 tests.
+- **`README.md`** : présentation, avertissement éducatif, schéma d'architecture (Mermaid,
+  affiché par GitHub), démarrage rapide, règles, modèle de données, résultats, limites.
+- **`docs/rapport.pdf`** (1 page A4), généré depuis `docs/rapport.html` :
+  méthode, résultats, limites, ce qui reste à faire, ce que j'ai appris.
+
+Pour régénérer le PDF après une modification de `rapport.html` : l'ouvrir dans Edge ou
+Chrome → Imprimer → « Enregistrer au format PDF », sans en-têtes ni pieds de page.
+
+### Critères de réussite du cahier des charges
+| Critère | État |
+|---|---|
+| Le dépôt cloné démarre avec `docker compose up` en suivant le README | ⚠️ **à vérifier** : cloner le dépôt public dans un autre dossier et suivre le README à la lettre |
+| Le script d'attaque refuse une cible autre que localhost | ✅ testé avec 5 cibles piégées |
+| Au moins 4 règles détectent leur scénario et passent leurs tests | ✅ 5 règles, 22 tests |
+| L'étoile contient au moins une table de faits et trois dimensions | ✅ 1 fait + 4 dimensions |
+| Le dashboard montre les alertes par type et par heure | ✅ |
+| Le rapport d'une page explique méthode, résultats et limites | ✅ |
+| Je peux expliquer chaque règle et chaque table sans notes, en 2 minutes | à entraîner (voir ci-dessous) |
+
+### Présentation en 2 minutes (à dire avec ses mots, pas à réciter)
+1. **Le but (15 s)** — « J'ai voulu relier ma formation en bases de données et ma
+   curiosité pour la cybersécurité : transformer des journaux de serveur web en données
+   pour détecter des attaques. »
+2. **Le labo (20 s)** — « Tout tourne en local avec Docker : une application
+   volontairement vulnérable, Juice Shop, derrière nginx qui écrit chaque requête dans
+   un journal. Un script envoie du trafic normal et cinq attaques, et il refuse toute
+   cible autre que ma machine. »
+3. **La partie données (30 s)** — « Un ETL Python lit le journal, découpe chaque ligne
+   avec une expression régulière et décode les URL, sinon `%27` cache l'apostrophe
+   d'une injection. Il charge une zone staging puis un schéma en étoile : une table de
+   faits où une ligne est une requête, et quatre dimensions temps, IP, URL et statut. »
+4. **La détection (30 s)** — « Cinq règles : deux par comptage — plus de 10 échecs de
+   connexion ou plus de 30 pages introuvables par IP et par minute — et trois par
+   motif : injection SQL, XSS, remontée de dossiers. Chaque règle a ses tests, avec les
+   seuils testés pile à la limite. »
+5. **Résultats et limites (25 s)** — « Tous les attaquants sont détectés et aucune
+   alerte grave ne vise un visiteur normal ; les faux positifs sont des recherches
+   comme "l'orange", classées en gravité faible. La grande limite : le journal ne voit
+   que l'adresse, pas le corps des requêtes POST, et l'IP peut être fausse. »
+
+### Ligne pour le CV (seulement si tout est publié)
+> **Mini-SIEM** (projet personnel, 2026) : analyse de journaux nginx, ETL Python vers
+> PostgreSQL en schéma en étoile, règles de détection d'attaques web simples (connexion
+> répétée, injection, scan) testées avec pytest, API FastAPI et tableau de bord. Docker.

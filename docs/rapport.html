@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Rapport Mini-SIEM</title>
+<!-- Source du rapport. Générer le PDF (1 page A4) avec Edge :
+     msedge --headless --no-pdf-header-footer --print-to-pdf=docs/rapport.pdf docs/rapport.html -->
+<style>
+  @page { size: A4; margin: 10mm 13mm; }
+  body { font: 9.2pt/1.33 "Segoe UI", Arial, sans-serif; color: #1f1f1d; margin: 0; }
+  h1 { font-size: 15pt; margin: 0 0 1mm; color: #1c5cab; }
+  .sous-titre { color: #52514e; margin: 0 0 3mm; font-size: 9pt; }
+  h2 { font-size: 10.3pt; margin: 2.6mm 0 1mm; color: #1c5cab;
+       border-bottom: 1px solid #cde2fb; padding-bottom: 0.6mm; }
+  p, ul { margin: 0 0 1.4mm; }
+  ul { padding-left: 4.5mm; }
+  li { margin-bottom: 0.6mm; }
+  table { border-collapse: collapse; width: 100%; margin: 1mm 0 1.5mm; font-size: 8.8pt; }
+  th, td { border: 1px solid #d6d5d0; padding: 0.9mm 1.6mm; text-align: left; vertical-align: top; }
+  th { background: #eef4fc; }
+  td.n { text-align: right; white-space: nowrap; }
+  code { font-family: Consolas, monospace; font-size: 8.6pt; background: #f2f1ee; padding: 0 0.6mm;
+         white-space: nowrap; }
+  .cadre { background: #f6f5f2; border-left: 3px solid #1c5cab; padding: 1.4mm 2.4mm; margin: 1.5mm 0; }
+  .deux { display: flex; gap: 5mm; }
+  .deux > div { flex: 1; }
+</style>
+</head>
+<body>
+
+<h1>Mini-SIEM : détecter des attaques web dans des journaux nginx</h1>
+<p class="sous-titre">Rapport de projet personnel · Ayoub BOUSSOUKAYA · novembre 2026 ·
+laboratoire local et éducatif (aucune cible réelle)</p>
+
+<h2>1. Objectif</h2>
+<p>Transformer des journaux de connexion en données exploitables pour repérer des attaques web simples,
+en reliant <b>données</b> (ETL, entrepôt en étoile), <b>cybersécurité</b> (comprendre les traces d'une
+attaque) et <b>développement</b> (API, tests, Docker).</p>
+
+<h2>2. Méthode</h2>
+<ul>
+  <li><b>Laboratoire Docker</b> : OWASP Juice Shop (application volontairement vulnérable) derrière un reverse
+    proxy nginx qui journalise chaque requête ; PostgreSQL ; ports liés à <code>127.0.0.1</code> uniquement.</li>
+  <li><b>Trafic de test</b> (<code>attack_sim.py</code>) : 15 visiteurs normaux et 5 scénarios d'attaque, chacun
+    avec une IP fictive envoyée dans <code>X-Forwarded-For</code>. Un garde-fou refuse toute cible autre que
+    localhost (testé, y compris <code>localhost.evil.com</code> et <code>localhost@evil.com</code>).</li>
+  <li><b>ETL</b> (<code>etl.py</code>) : expression régulière sur le format <i>combined</i>, décodage des URL
+    (<code>%27</code> → <code>'</code>), rejet des lignes illisibles, chargement de <code>staging</code> puis du
+    schéma en étoile (<code>fait_requete</code> + dimensions temps, IP, URL, statut) en une seule transaction.
+    Relancer donne le même résultat (idempotent).</li>
+  <li><b>Détection</b> (<code>detect.py</code>) : 2 règles par comptage par IP et par minute (R1, R4) et
+    3 règles par motif sur l'URL décodée deux fois (R2, R3, R5). <b>30 tests pytest</b>, dont les seuils testés
+    à la limite (10 échecs → rien, 11 → alerte).</li>
+  <li><b>Restitution</b> : API FastAPI en lecture seule (requêtes SQL paramétrées) et dashboard Streamlit
+    qui passe par l'API (sans le mot de passe de la base).</li>
+</ul>
+
+<h2>3. Résultats (882 requêtes, dont 575 de visiteurs normaux)</h2>
+<table>
+  <tr><th>Règle</th><th>Seuil / motif</th><th>Alertes</th><th>Verdict</th></tr>
+  <tr><td>R1 brute force (A07)</td><td>&gt; 10 × 401 sur le login / IP / min</td><td class="n">2</td>
+      <td>les 2 scénarios ; erreurs isolées ignorées</td></tr>
+  <tr><td>R2 injection SQL (A03)</td><td><code>UNION SELECT</code>, <code>OR 1=1</code>, <code>--</code>…</td>
+      <td class="n">8 hautes</td><td>toutes les injections détectées</td></tr>
+  <tr><td></td><td>apostrophe seule</td><td class="n">36 faibles</td>
+      <td><b>faux positifs</b> : 36 recherches « l'orange »</td></tr>
+  <tr><td>R3 XSS (A03)</td><td><code>&lt;script</code>, <code>javascript:</code>, <code>onerror=</code></td>
+      <td class="n">12</td><td>toutes détectées</td></tr>
+  <tr><td>R4 scan</td><td>&gt; 30 × 404 / IP / min</td><td class="n">2</td>
+      <td>scanner : 80 × 404/min ; visiteur : 3 au maximum</td></tr>
+  <tr><td>R5 traversée (A01)</td><td><code>../</code> après double décodage</td><td class="n">23</td>
+      <td>toutes détectées, mais 13 attribuées à l'IP de Docker</td></tr>
+</table>
+<div class="cadre"><b>Bilan :</b> chaque IP attaquante est détectée par la bonne règle et <b>aucune alerte haute
+ne vise un visiteur normal</b>. Les seuls faux positifs sont classés en gravité faible : c'est un choix assumé,
+car une apostrophe seule est souvent légitime, mais l'ignorer laisserait passer des injections simples.</div>
+
+<div class="deux">
+<div>
+<h2>4. Limites</h2>
+<ul>
+  <li><b>Seule l'adresse est visible</b> : nginx n'écrit pas le corps des POST (mot de passe, injection
+    dans un formulaire).</li>
+  <li><b>IP non fiables</b> : <code>X-Forwarded-For</code> est accepté de tous (labo uniquement). Une traversée
+    qui sort de la racine est rejetée par nginx (400) avant la lecture des en-têtes, donc elle est journalisée
+    avec l'IP de Docker.</li>
+  <li><b>Fenêtre fixe d'une minute</b> : 8 échecs à hh:mm:55 puis 8 à hh:mm+1:05 passent inaperçus.</li>
+  <li><b>R4 ne compte que les 404</b> : Juice Shop renvoie 200 pour <code>/admin.php</code>, donc 20 % du
+    scan échappe au comptage.</li>
+  <li>Traitement par lots ; une alerte par requête ; triple encodage non décodé.</li>
+</ul>
+</div>
+<div>
+<h2>5. Ce qui reste à faire</h2>
+<ul>
+  <li>Fenêtre glissante de 60 s pour R1 et R4 (<code>rolling("60s")</code> en pandas).</li>
+  <li>Compter aussi les 403 et les pages 200 inhabituelles pour R4.</li>
+  <li>Regrouper les alertes par IP et par période pour réduire le bruit.</li>
+  <li>Journaliser le corps des POST de connexion (F12).</li>
+  <li>Comparer avec un scan OWASP ZAP sur le labo (F11).</li>
+  <li>Chargement incrémental (nouvelles lignes seulement).</li>
+</ul>
+</div>
+</div>
+
+<h2>6. Ce que j'ai appris</h2>
+<p>Les journaux ne contiennent pas tout : il faut savoir ce qu'ils montrent (statut, URL) et ce qu'ils cachent
+(corps, vraie IP). Deux bugs instructifs : un journal corrompu par des octets nuls (fichier vidé pendant que nginx
+écrivait) et une règle qui plantait sur les vraies données (<code>NaN</code> au lieu de <code>None</code> en
+pandas), corrigée en écrivant d'abord le test qui reproduit le bug.</p>
+
+</body>
+</html>

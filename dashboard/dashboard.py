@@ -104,9 +104,13 @@ with gauche:
 with droite:
     st.subheader("Alertes par heure")
     df_heure = pd.DataFrame(stats["alertes_par_heure"])
+    # On trie sur la VRAIE date avant de la transformer en texte : sinon Plotly range
+    # les heures dans l'ordre où il les rencontre (bug vu : 16h, 21h, 17h).
+    df_heure = df_heure.sort_values("heure")
     df_heure["heure"] = pd.to_datetime(df_heure["heure"]).dt.strftime("%d/%m %Hh")
-    fig = px.bar(df_heure, x="heure", y="nb", color="regle",
-                 color_discrete_map=COULEURS, category_orders={"regle": REGLES},
+    ordre_heures = list(df_heure["heure"].unique())
+    fig = px.bar(df_heure, x="heure", y="nb", color="regle", color_discrete_map=COULEURS,
+                 category_orders={"regle": REGLES, "heure": ordre_heures},
                  labels={"nb": "Nombre d'alertes", "heure": "", "regle": "Règle"})
     st.plotly_chart(mise_en_forme(fig), width="stretch")
     with st.expander("Voir les données"):
