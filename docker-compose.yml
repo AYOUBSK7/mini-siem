@@ -48,5 +48,56 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------
+  #  Nos programmes Python (même image, construite depuis le Dockerfile)
+  # ---------------------------------------------------------------------
+
+  # API FastAPI : http://127.0.0.1:8000/docs
+  api:
+    build: .
+    container_name: siem_api
+    command: uvicorn api:app --app-dir app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment:
+      # Dans Docker, la base s'appelle "postgres" (nom du service), port interne 5432
+      PG_HOST: postgres
+      PG_PORT: "5432"
+    depends_on:
+      postgres:
+        condition: service_healthy   # attendre que PostgreSQL soit prêt
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  # Dashboard Streamlit : http://127.0.0.1:8501
+  # Il ne connaît PAS le mot de passe de la base : il passe par l'API.
+  dashboard:
+    build: .
+    container_name: siem_dashboard
+    command: streamlit run dashboard/dashboard.py --server.address 0.0.0.0 --server.port 8501 --server.headless true
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:8501:8501"
+    restart: unless-stopped
+
+  # ETL + détection, lancés À LA DEMANDE (profil "outils" : pas démarré par "up") :
+  #   docker compose run --rm pipeline
+  pipeline:
+    build: .
+    profiles: ["outils"]
+    command: sh -c "python app/etl.py && python app/detect.py"
+    env_file: .env
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+    volumes:
+      - ./logs:/code/logs:ro   # lecture seule : le pipeline lit le journal, ne le modifie pas
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   donnees_pg:

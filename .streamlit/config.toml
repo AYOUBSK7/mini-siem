@@ -1,0 +1,9 @@
+# Thème clair forcé : la palette des graphiques a été vérifiée sur fond clair
+[theme]
+base = "light"
+backgroundColor = "#fcfcfb"
+# Couleur d'accent neutre : le rouge par défaut ferait croire à « critique »
+primaryColor = "#52514e"
+
+[browser]
+gatherUsageStats = false

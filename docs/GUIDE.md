@@ -529,3 +529,90 @@ bibliothèque FastAPI elle-même, pas de mon code ; ça n'empêche rien.
 - **Pas d'authentification** : acceptable car l'API n'écoute que sur `127.0.0.1` ; avant
   toute mise en ligne, il faudrait un jeton ou un mot de passe (hors périmètre).
 - **Pas de pagination** au-delà de 500 alertes.
+
+---
+
+## Étape 7 : le dashboard `dashboard/dashboard.py` + tout dans Docker
+
+### Ce qu'on a fait
+1. **Un dashboard Streamlit** (http://127.0.0.1:8501) qui **lit l'API**, pas la base :
+   - 4 chiffres clés : requêtes analysées, IP, alertes, alertes hautes
+   - **Alertes par type** (barres horizontales, valeur écrite au bout de chaque barre)
+   - **Alertes par heure** (barres empilées par règle) + un tableau « Voir les données »
+   - **Top 10 des IP** (tableau avec une barre de progression)
+   - **Dernières alertes** avec filtres règle / gravité / nombre, envoyés à l'API
+2. **Tout le projet dans Docker** : un `Dockerfile` (une image Python pour nos 3
+   programmes) et 3 nouveaux services dans `docker-compose.yml`.
+
+| Service | Démarré par `up` ? | Rôle |
+|---|---|---|
+| `juiceshop`, `nginx`, `postgres` | oui | le labo (étape 1) |
+| `api` | oui | FastAPI sur `127.0.0.1:8000` |
+| `dashboard` | oui | Streamlit sur `127.0.0.1:8501` |
+| `pipeline` | **non**, à la demande | `etl.py` puis `detect.py` |
+
+```bash
+docker compose up -d --build           # tout démarrer (et reconstruire après une modif du code)
+docker compose run --rm pipeline       # ETL + détection
+```
+`attack_sim.py` reste lancé **depuis le PC** : dans un conteneur, la cible serait
+`http://nginx` et le garde-fou la refuserait (ce n'est pas localhost), ce qui est voulu.
+
+### Les questions qu'on peut me poser
+
+**Pourquoi le dashboard passe par l'API au lieu de lire la base ?**
+Il n'a pas besoin du mot de passe PostgreSQL (son service n'a pas `env_file: .env`).
+Moins de programmes connaissent le mot de passe = moins de risque. Et c'est l'API qui
+fait les requêtes SQL paramétrées, donc les filtres du dashboard sont protégés contre
+l'injection.
+
+**Comment les conteneurs se trouvent entre eux ?**
+Par le **nom du service** sur le réseau interne de Docker : l'API se connecte à
+`postgres:5432`, le dashboard appelle `http://api:8000`. Depuis le PC, on utilise
+`127.0.0.1:5433` et `127.0.0.1:8000`. C'est pour ça que `PG_HOST` est redéfini dans
+`docker-compose.yml` (`environment:` est prioritaire sur `.env`).
+
+**Pourquoi `depends_on: condition: service_healthy` ?**
+Sans ça, l'API démarrerait avant que PostgreSQL accepte les connexions. Le
+`healthcheck` (`pg_isready`) dit à Docker quand la base est vraiment prête.
+
+**Pourquoi le pipeline a un profil `outils` ?**
+Le cahier des charges dit « lancé à la demande » : l'ETL fait son travail puis
+s'arrête, ce n'est pas un serveur. `docker compose run --rm` le lance une fois et
+supprime le conteneur à la fin. Le journal est monté en **lecture seule** (`:ro`).
+
+**Pourquoi copier `requirements.txt` avant le code dans le Dockerfile ?**
+Docker garde chaque étape en cache. Si je modifie seulement mon code, l'étape
+`pip install` (la plus longue : 8 minutes la première fois) est réutilisée.
+
+**Pourquoi un `.dockerignore` ?**
+Pour ne jamais mettre `.env` (le mot de passe), `.venv` ou `.git` dans l'image.
+
+**Et au tout premier lancement, quand les tables n'existent pas ?**
+L'API répond 503 « Tables absentes : lancer le pipeline » (au lieu d'une erreur 500),
+et le dashboard affiche ce message. Testé dans `test_api.py` en simulant l'erreur.
+
+### Les choix de présentation (et pourquoi)
+- **Une couleur fixe par règle**, la même dans tous les graphiques : R1 bleu, R2 orange,
+  R3 vert d'eau, R4 jaune, R5 rose. Palette **vérifiée avec un outil** pour les
+  daltoniens (les couleurs voisines restent distinguables).
+- Trois de ces couleurs sont pâles sur fond clair : on écrit donc les **valeurs en
+  texte** et on propose un **tableau des données** (« Voir les données »).
+- La **gravité** est affichée avec une icône **et** un mot (🔴 haute), jamais la couleur seule.
+- Les barres du Top 10 sont **grises** : le rouge par défaut de Streamlit aurait fait
+  croire à une alerte critique alors qu'il s'agit juste d'une quantité.
+- Heures en **UTC**, indiqué sous le titre.
+
+### Ce que montre le dashboard (à commenter à l'oral)
+- La première IP du Top 10 est `172.22.0.1`, **l'IP de Docker** : ce sont les
+  traversées bloquées par nginx (limite de l'étape 2). Belle illustration du fait qu'il
+  faut toujours vérifier à qui on attribue une alerte.
+- Les visiteurs normaux (`192.0.2.x`) apparaissent à cause des alertes faibles
+  `l'orange` : le filtre « Gravité = haute » les fait disparaître.
+- « Alertes par heure » n'a que 2 barres car tout le trafic tient en quelques minutes :
+  relancer `attack_sim.py` à d'autres moments pour de meilleures captures.
+
+### Vérifications faites
+- Dans Docker : pipeline → 516 lignes, 55 alertes (mêmes chiffres que hors Docker),
+  `/stats` répond, 29 tests passent dans le conteneur (30 sur le PC avec le test
+  « tables absentes » ajouté ensuite), aucun message d'erreur dans le journal du dashboard.

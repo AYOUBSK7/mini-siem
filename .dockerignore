@@ -1,0 +1,8 @@
+# Fichiers à ne JAMAIS mettre dans l'image Docker
+.env
+.venv/
+.git/
+logs/
+docs/
+__pycache__/
+.pytest_cache/

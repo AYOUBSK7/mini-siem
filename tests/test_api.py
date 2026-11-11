@@ -6,7 +6,7 @@ Si la base n'est pas joignable, les tests sont ignorés (skipped) au lieu d'éch
 """
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from api import app, moteur
 
@@ -56,9 +56,24 @@ def test_injection_sql_dans_le_filtre_ip_ne_marche_pas():
     assert reponse.json() == []
 
 
+def test_tables_absentes_donne_un_message_clair(monkeypatch):
+    # Simule un premier lancement (ETL jamais exécuté) : la requête SQL échoue
+    # avec ProgrammingError. L'API doit répondre 503 + un conseil, pas une erreur 500.
+    import api
+
+    def lire_sans_tables(*args, **kwargs):
+        raise ProgrammingError("SELECT ...", {}, Exception('relation "dw.alerte" does not exist'))
+
+    monkeypatch.setattr(api, "lire", lire_sans_tables)
+    reponse = client.get("/stats")
+    assert reponse.status_code == 503
+    assert "pipeline" in reponse.json()["erreur"]
+
+
 def test_stats_coherentes():
     stats = client.get("/stats").json()
     # Le total doit être égal à la somme par règle et à la somme par gravité
     assert stats["nb_alertes"] == sum(r["nb"] for r in stats["alertes_par_regle"])
     assert stats["nb_alertes"] == sum(g["nb"] for g in stats["alertes_par_gravite"])
+    assert stats["nb_alertes"] == sum(h["nb"] for h in stats["alertes_par_heure"])
     assert len(stats["top_ip"]) <= 10

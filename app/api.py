@@ -15,7 +15,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from etl import creer_moteur
 
@@ -54,6 +54,14 @@ def base_indisponible(request: Request, erreur: OperationalError):
     """Si PostgreSQL est arrêté : message clair (503) au lieu d'une erreur 500."""
     return JSONResponse(status_code=503,
                         content={"erreur": "Base de données indisponible. Le labo est-il lancé ?"})
+
+
+@app.exception_handler(ProgrammingError)
+def tables_absentes(request: Request, erreur: ProgrammingError):
+    """Premier lancement : les tables n'existent pas tant que l'ETL n'a pas tourné."""
+    return JSONResponse(status_code=503,
+                        content={"erreur": "Tables absentes : lancer le pipeline "
+                                           "(docker compose run --rm pipeline)."})
 
 
 @app.get("/")
@@ -113,9 +121,10 @@ def statistiques():
         "alertes_par_gravite": lire("""
             SELECT gravite, COUNT(*) AS nb FROM dw.alerte GROUP BY gravite ORDER BY nb DESC
         """),
+        # Par heure ET par règle : le dashboard peut empiler les règles dans chaque barre
         "alertes_par_heure": lire("""
-            SELECT DATE_TRUNC('hour', horodatage) AS heure, COUNT(*) AS nb
-            FROM dw.alerte GROUP BY 1 ORDER BY 1
+            SELECT DATE_TRUNC('hour', horodatage) AS heure, regle, COUNT(*) AS nb
+            FROM dw.alerte GROUP BY 1, 2 ORDER BY 1, 2
         """),
         # Top 10 des IP qui ont déclenché le plus d'alertes
         "top_ip": lire("""
