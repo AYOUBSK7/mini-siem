@@ -279,3 +279,95 @@ des fuseaux ; on pourra convertir en heure de Paris à l'affichage.
 ```bash
 docker compose exec -T postgres psql -U siem_user -d mini_siem < sql/schema.sql
 ```
+
+---
+
+## Étape 4 : l'ETL `app/etl.py` + `sql/staging_vers_dw.sql`
+
+### Ce qu'on a fait
+```
+access.log --(E) lire--> lignes --(T) regex + décodage + dates--> DataFrame pandas
+          --(L) TRUNCATE + INSERT--> staging.access_log --(SQL)--> étoile dw
+```
+
+| Lettre | Fonction | Ce qu'elle fait |
+|---|---|---|
+| **E** | `lire_journal()` | lit le fichier ligne par ligne |
+| **T** | `parser_ligne()` | découpe une ligne avec une **expression régulière** ; renvoie `None` si illisible |
+| **T** | `transformer()` | met tout dans un DataFrame pandas, convertit les dates, compte les rejets |
+| **L** | `charger()` | dans **une seule transaction** : crée les tables, vide staging, insère, remplit l'étoile |
+
+### La transformation, ligne par ligne
+```
+203.0.113.77 - - [11/Nov/2026:16:49:07 +0000] "GET /rest/products/search?q=%27+OR+1%3D1-- HTTP/1.1" 500 954 "-" "python-requests/2.34.2"
+```
+| Colonne staging | Valeur | Remarque |
+|---|---|---|
+| ip | `203.0.113.77` | |
+| horodatage | `2026-11-11 16:49:07` | converti en vraie date (UTC) |
+| methode | `GET` | |
+| chemin | `/rest/products/search` | partie avant le `?` |
+| parametres | `q=' OR 1=1--` | **décodé** : `%27` → `'`, `%3D` → `=`, `+` → espace |
+| statut | `500` | Juice Shop a planté : l'injection a cassé sa requête SQL |
+| taille | `954` | `-` est remplacé par 0 |
+| agent_utilisateur | `python-requests/2.34.2` | `-` est remplacé par NULL |
+
+Lignes testées et **rejetées** proprement (au lieu de faire planter l'ETL) :
+une requête vide `""`, des octets binaires (quelqu'un qui parle HTTPS à un port HTTP),
+du texte qui n'est pas du nginx. L'ETL affiche combien il en a rejeté.
+
+### Comment l'étoile est remplie (`staging_vers_dw.sql`)
+1. **Dimensions** : `INSERT ... SELECT DISTINCT ... ON CONFLICT DO NOTHING`. On ajoute
+   seulement les valeurs nouvelles ; une IP déjà connue garde son `id_ip`.
+2. **Faits** : `TRUNCATE` puis `INSERT ... SELECT` avec une jointure sur les clés
+   naturelles pour retrouver les clés de substitution
+   (`JOIN dw.dim_ip i ON i.adresse_ip = a.ip`).
+3. `nb_requetes` de `dim_ip` est calculé à la fin.
+
+La famille d'URL est déduite avec un `CASE` : `/api/…` et `/rest/…` → api,
+`/ftp…` → ftp, `/assets/…` ou `.js/.css/.png…` → static, le reste → autre.
+
+### Les questions qu'on peut me poser
+
+**Pourquoi décoder l'URL ?**
+Dans le journal, `'` est écrit `%27`. Si je cherche une apostrophe sans décoder, je ne
+trouve rien : l'attaque passe inaperçue. Attention, je décode **une seule fois** : un
+double encodage (`%252e` → `%2e`) reste visible et la règle R5 doit chercher aussi
+cette forme.
+
+**Pourquoi une seule transaction ?**
+`with moteur.begin()` : si une étape plante (par exemple le SQL de l'étoile), **tout est
+annulé**. On n'a jamais un staging rempli avec une étoile à moitié vide.
+
+**Que se passe-t-il si je lance l'ETL deux fois ?**
+Le même résultat (testé : 516 lignes → 516 faits, les deux fois). staging et les faits
+sont vidés puis rechargés ; les dimensions ignorent les doublons. On dit que l'ETL est
+**idempotent**.
+
+**Pourquoi on ne vide pas les dimensions ?**
+`dw.alerte` pointe vers `dim_ip` (clé étrangère). Si on vidait `dim_ip`, les id
+changeraient et les alertes pointeraient vers les mauvaises IP.
+
+**Pourquoi un traitement par lots et pas du temps réel ?**
+C'est hors périmètre (cahier des charges). On relit tout le fichier à chaque fois :
+simple et suffisant pour quelques milliers de lignes. **Limite** : avec des millions de
+lignes, il faudrait ne lire que les nouvelles lignes (chargement incrémental).
+
+**Pourquoi `127.0.0.1` dans `.env` et pas `localhost` ?**
+Même piège qu'à l'étape 2 : sous Windows, `localhost` essaie d'abord l'IPv6.
+
+### Résultats des analyses (`sql/requetes_analyse.sql`)
+- **404 par IP et par minute** : `198.51.100.99` → **80** dans la même minute ;
+  les visiteurs normaux → 1 au maximum. Le seuil de 30 de la règle R4 sépare bien les deux.
+- **Top 10 des IP** : le scanner fait 80 % d'erreurs, les visiteurs entre 3 et 19 %
+  (leurs 401 isolés et les 500 de la recherche `l'orange`).
+- **Limite pour le dashboard** : tout le trafic tient en quelques minutes, donc
+  « alertes par heure » n'aura qu'une ou deux barres. Pour une capture d'écran plus
+  parlante, relancer `attack_sim.py` à plusieurs moments de la journée.
+
+### Commandes
+```bash
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python app\etl.py
+docker compose exec -T postgres psql -U siem_user -d mini_siem < sql/requetes_analyse.sql
+```
