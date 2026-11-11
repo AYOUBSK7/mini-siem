@@ -165,3 +165,117 @@ Sur 100 pages du scan, seules 80 donnent un 404.
 del logs\access.log
 docker compose restart nginx
 ```
+
+---
+
+## Étape 3 : les tables `sql/schema.sql`
+
+### Ce qu'on a fait
+Deux **schémas** PostgreSQL (un schéma = un « dossier » de tables dans la base) :
+
+- `staging` : la **zone de transit**. Une ligne du journal = une ligne de
+  `staging.access_log`, découpée en colonnes (IP, date, méthode, chemin…). On y garde
+  aussi la `ligne_brute` : c'est la preuve d'origine si une alerte est contestée.
+- `dw` (*data warehouse*) : l'**entrepôt en étoile** + la table des alertes.
+
+```mermaid
+erDiagram
+    dim_temps  ||--o{ fait_requete : "quand ?"
+    dim_ip     ||--o{ fait_requete : "qui ?"
+    dim_url    ||--o{ fait_requete : "quoi ?"
+    dim_statut ||--o{ fait_requete : "résultat ?"
+    dim_ip     ||--o{ alerte       : "qui attaque ?"
+
+    fait_requete { bigint id_fait PK
+                   int id_temps FK
+                   int id_ip FK
+                   int id_url FK
+                   int id_statut FK
+                   varchar methode
+                   int taille }
+    dim_temps    { int id_temps PK
+                   date date
+                   smallint heure
+                   smallint minute
+                   varchar jour_semaine }
+    dim_ip       { int id_ip PK
+                   varchar adresse_ip UK
+                   int nb_requetes }
+    dim_url      { int id_url PK
+                   text chemin UK
+                   varchar famille }
+    dim_statut   { int id_statut PK
+                   smallint code UK
+                   varchar categorie }
+    alerte       { int id_alerte PK
+                   varchar regle
+                   varchar categorie_owasp
+                   int id_ip FK
+                   timestamp horodatage
+                   varchar gravite
+                   text preuve }
+```
+
+### Le vocabulaire à maîtriser
+
+| Mot | Définition simple | Dans mon projet |
+|---|---|---|
+| **Table de faits** | Ce qu'on mesure / compte, un événement | `fait_requete` : une requête HTTP |
+| **Grain** | Ce que représente UNE ligne de faits | 1 ligne = 1 requête reçue par nginx |
+| **Dimension** | Le contexte qui sert à filtrer / regrouper | temps, IP, URL, statut |
+| **Mesure** | Valeur numérique qu'on additionne | `taille` (octets envoyés) ; et `COUNT(*)` = nb de requêtes |
+| **Clé de substitution** | Identifiant technique généré (`SERIAL`) | `id_ip = 3` au lieu de `'203.0.113.66'` |
+| **Clé naturelle** | La vraie valeur métier, marquée `UNIQUE` | `adresse_ip`, `chemin`, `code` |
+| **Dimension dégénérée** | Attribut gardé dans le fait car trop petit pour une table | `methode` (GET, POST…) |
+
+### Les questions qu'on peut me poser
+
+**Pourquoi un schéma en étoile et pas une seule grosse table ?**
+Pour analyser vite et simplement : chaque question (« combien de 404 par IP et par
+minute ? ») = la table de faits + une jointure par dimension utilisée. Les textes
+longs (chemin, IP) ne sont stockés **qu'une fois** dans leur dimension ; la table de
+faits ne contient que des petits entiers → elle reste légère même avec des millions
+de requêtes.
+
+**Pourquoi passer par `staging` ?**
+On sépare « lire le fichier » et « construire l'entrepôt ». Si la construction de
+l'étoile plante, les données lues sont toujours là, on n'a pas besoin de relire le
+journal. C'est la même logique que mon projet CO2.
+
+**Pourquoi la dimension temps est à la minute ?**
+Mes règles et mes analyses raisonnent par minute (« plus de 10 échecs de connexion
+en 1 minute », « 404 par minute »). Plus fin (la seconde) = beaucoup de lignes pour
+rien ; plus gros (l'heure) = on ne pourrait plus analyser par minute.
+
+**Pourquoi `UNIQUE` sur `adresse_ip`, `chemin`, `code` ?**
+Pour qu'une même IP n'ait qu'**une** ligne dans `dim_ip`. Sinon le top 10 des IP
+serait faux (la même IP comptée en plusieurs morceaux).
+
+**À quoi servent les `CHECK` et les `REFERENCES` ?**
+Ce sont des contraintes : la base **refuse** les données incohérentes, même si mon
+code Python a un bug. Testé :
+
+| Test | Résultat |
+|---|---|
+| Insérer deux fois la même IP | refusé (`UNIQUE`) |
+| `famille = 'images'` | refusé (`CHECK`, seulement api / static / ftp / autre) |
+| Fait qui pointe vers une IP inexistante | refusé (clé étrangère `REFERENCES`) |
+| `gravite = 'critique'` | refusé (`CHECK`, seulement faible / moyenne / haute) |
+
+**Pourquoi `IF NOT EXISTS` partout ?**
+Le script est **idempotent** : on peut le lancer 10 fois, le résultat est le même et
+il n'y a pas d'erreur. L'ETL pourra donc l'exécuter à chaque démarrage sans risque.
+
+**Pourquoi ne pas mettre le script dans `docker-entrypoint-initdb.d` ?**
+PostgreSQL n'exécute ce dossier **qu'à la toute première création** du volume de
+données. Si le volume existe déjà (c'est mon cas), le script serait ignoré
+silencieusement. C'est plus fiable que l'ETL l'exécute lui-même.
+
+**Pourquoi `TIMESTAMP` en UTC ?**
+nginx écrit l'heure en UTC (`+0000`). On garde l'UTC partout pour ne pas mélanger
+des fuseaux ; on pourra convertir en heure de Paris à l'affichage.
+
+### Commande pour exécuter le script à la main
+```bash
+docker compose exec -T postgres psql -U siem_user -d mini_siem < sql/schema.sql
+```
