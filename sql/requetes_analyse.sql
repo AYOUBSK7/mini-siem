@@ -37,3 +37,12 @@ JOIN dw.dim_url    u ON u.id_url    = f.id_url
 JOIN dw.dim_statut s ON s.id_statut = f.id_statut
 GROUP BY u.famille, s.categorie
 ORDER BY u.famille, s.categorie;
+
+-- 4. Alertes par règle et par heure (après detect.py)
+SELECT regle,
+       DATE_TRUNC('hour', horodatage) AS heure,
+       COUNT(*) AS nb_alertes,
+       COUNT(*) FILTER (WHERE gravite = 'haute') AS dont_hautes
+FROM dw.alerte
+GROUP BY regle, DATE_TRUNC('hour', horodatage)
+ORDER BY heure, regle;

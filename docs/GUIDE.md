@@ -371,3 +371,92 @@ Même piège qu'à l'étape 2 : sous Windows, `localhost` essaie d'abord l'IPv6.
 .venv\Scripts\python app\etl.py
 docker compose exec -T postgres psql -U siem_user -d mini_siem < sql/requetes_analyse.sql
 ```
+
+---
+
+## Étape 5 : la détection `app/detect.py` + les tests `tests/test_rules.py`
+
+### Ce qu'on a fait
+`detect.py` lit `staging.access_log`, applique 5 règles, et **remplace** le contenu de
+`dw.alerte` (relancer = même résultat, comme l'ETL). Chaque règle est une fonction
+`DataFrame -> liste d'alertes` qui ne touche pas à la base : c'est ce qui la rend
+facile à tester.
+
+| Règle | Type | Comment elle détecte | Gravité | OWASP 2021 |
+|---|---|---|---|---|
+| R1 brute force | comptage | plus de **10** réponses 401 sur `/rest/user/login`, même IP, même minute | haute | A07 Authentification |
+| R2 injection SQL | motif | `UNION … SELECT`, `OR 1=1`, `' OR '`, `--`, `; DROP` → haute ; apostrophe seule → **faible** | haute / faible | A03 Injection |
+| R3 XSS | motif | `<script`, `<iframe`, `javascript:`, `onerror=` (et autres `on…=`) | moyenne | A03 Injection |
+| R4 scan | comptage | plus de **30** réponses 404, même IP, même minute | moyenne | Reconnaissance |
+| R5 traversal | motif | `../` ou `..\` après décodage | haute | A01 Contrôle d'accès |
+
+### Pourquoi la détection lit `staging` et pas l'étoile ?
+Les règles par motif (R2, R3, R5) ont besoin des **paramètres** de l'URL (`q=' OR 1=1`),
+et l'étoile ne les garde pas (`dim_url` = le chemin seulement). R1 et R4 ont besoin de
+l'heure à la seconde pour écrire la preuve. L'étoile sert à **l'analyse** (dashboard),
+staging sert à **la détection**.
+
+### Le double décodage
+L'ETL décode une fois (`%27` → `'`). `url_complete()` décode **une seconde fois** :
+un attaquant qui encode deux fois (`%253C` → `%3C` → `<`) ne passe donc pas. Grâce à
+ça, R5 n'a besoin que d'un motif simple, `../`, pour attraper `..%2F`, `%252e%252e%252f`
+et `....//` (qui contient `../`).
+
+### Les tests (22 tests, `python -m pytest`)
+Pour chaque règle : **au moins une ligne qui doit déclencher, une ligne normale qui ne
+doit pas**, et les seuils testés **pile à la limite** (10 échecs → rien, 11 → alerte ;
+30 × 404 → rien, 31 → alerte). Les lignes de test sont de vraies lignes nginx passées
+dans l'ETL, donc on teste toute la chaîne.
+
+Exemples de pièges testés : 15 utilisateurs différents qui se trompent une fois
+(pas un brute force), 40 erreurs 404 étalées sur 4 minutes (pas un scan),
+`monkey=banana` (contient `on…=`, ne doit pas être pris pour du XSS),
+`fichier..png` (`..` sans `/`, pas une traversée).
+
+**Les tests servent-ils vraiment ?** Vérifié : en cassant volontairement R1
+(seuil à 100), le test échoue. Un test qui ne peut jamais échouer ne sert à rien.
+
+### Le bug trouvé sur les vraies données (bonne histoire pour l'oral)
+Les 21 premiers tests passaient, mais `detect.py` plantait sur la base :
+`TypeError: can only concatenate str (not "float") to str`.
+Cause : quand une URL n'a pas de paramètres, pandas lit la case vide comme **`NaN`**
+(un nombre « pas un nombre ») et pas `None`. Or `if NaN:` est **vrai** en Python.
+Méthode : j'ai d'abord écrit un test qui reproduit le bug (lignes avec et sans
+paramètres mélangées), vérifié qu'il échouait, puis corrigé avec `pd.notna()`.
+Leçon : les données de test doivent ressembler aux vraies données.
+
+### Résultats sur le journal du labo (516 requêtes)
+| Règle | Alertes | Sur qui | Verdict |
+|---|---|---|---|
+| R1 | 1 | `203.0.113.66` : 20 échecs en 2 s | ✅ vrai positif ; les 13 erreurs isolées des visiteurs sont ignorées |
+| R2 haute | 4 | `203.0.113.77` | ✅ les 4 injections détectées |
+| R2 faible | 22 | 12 visiteurs normaux | ⚠️ **faux positifs** : les 22 recherches `l'orange` |
+| R3 | 9 | `203.0.113.88` | ✅ (3 charges × 3 exécutions du scénario) |
+| R4 | 1 | `198.51.100.99` : 80 × 404 en 5 s | ✅ |
+| R5 | 18 | `198.51.100.111` (6) et `172.22.0.1` (12) | ✅ mais voir limite ci-dessous |
+
+**Bilan** : chaque IP attaquante est détectée par la bonne règle, aucune alerte
+« haute » sur un visiteur normal. Les seuls faux positifs sont en gravité faible, et
+c'est un choix assumé : une apostrophe seule est souvent légitime (`l'orange`,
+`O'Brien`), mais l'ignorer complètement laisserait passer des injections simples.
+
+### Les limites à citer
+1. **Fenêtre fixe d'une minute** : 8 échecs à 16:49:55 et 8 à 16:50:05 = 16 échecs en
+   10 secondes, mais 8 par minute → **pas d'alerte** (faux négatif). Amélioration :
+   une fenêtre glissante de 60 s (`rolling("60s")` en pandas).
+2. **R5 sur la mauvaise IP** : les traversées bloquées par nginx (400) sont journalisées
+   avec l'IP de Docker `172.22.0.1`, car nginx n'a pas lu l'en-tête `X-Forwarded-For`
+   (voir étape 2). L'alerte est juste, mais l'IP accusée est fausse.
+3. **R4 ne voit que les 404** : sur Juice Shop, 20 % du scan reçoit un 200 (page
+   d'accueil). Ici le seuil est quand même dépassé, mais un scan plus discret (25 pages
+   par minute) passerait.
+4. **Une alerte par requête** pour R2/R3/R5 : un attaquant qui envoie 1000 injections =
+   1000 alertes. En vrai on regrouperait par IP et par période.
+5. **Un attaquant qui encode trois fois** passerait (on ne décode que deux fois).
+
+### Commandes
+```bash
+.venv\Scripts\python -m pytest                  # les 22 tests
+.venv\Scripts\python app\etl.py                 # d'abord charger les données
+.venv\Scripts\python app\detect.py              # puis détecter
+```
