@@ -88,3 +88,80 @@ docker compose ps             # voir les conteneurs
 docker compose logs nginx     # voir les erreurs éventuelles de nginx
 docker compose down           # tout arrêter
 ```
+
+---
+
+## Étape 2 : le générateur de trafic `app/attack_sim.py`
+
+### Ce qu'on a fait
+Un script Python (bibliothèque `requests`) qui envoie, **vers le labo local uniquement** :
+
+| Scénario | IP simulée | Ce qu'il envoie | Ce qu'on voit dans le journal |
+|---|---|---|---|
+| Trafic normal | 15 IP `192.0.2.10` à `.24` | 200 actions : accueil, recherche, fiche produit, connexion réussie | surtout des 200, quelques 401 isolés (erreur de mot de passe) |
+| R1 brute force | `203.0.113.66` | 20 connexions avec un faux mot de passe | 20 × **401** sur `/rest/user/login` |
+| R2 injection SQL | `203.0.113.77` | `' OR 1=1--`, `UNION SELECT`… dans la recherche | `q=%27+OR+1%3D1--`, souvent **500** (erreur SQL côté Juice Shop) |
+| R3 XSS | `203.0.113.88` | `<script>`, `<iframe src="javascript:…">` | `q=%3Cscript%3E…` |
+| R4 scan | `198.51.100.99` | 100 pages inexistantes | 80 × **404** et 20 × **200** |
+| R5 traversal | `198.51.100.111` | `..%2f`, `%252e%252e%252f`, `....//` | 403 / 200 / **400** |
+
+Lancement :
+```bash
+.venv\Scripts\python app\attack_sim.py                   # tout
+.venv\Scripts\python app\attack_sim.py --scenario scan   # un seul scénario
+```
+
+### Comment fonctionne le garde-fou (exigence F9)
+```python
+hote = urlparse(url).hostname          # extrait uniquement le nom d'hôte de l'URL
+if hote not in {"localhost", "127.0.0.1", "::1"}:
+    sys.exit(1)                         # on arrête AVANT d'envoyer la moindre requête
+```
+On compare le nom d'hôte **exact** (et pas « l'URL contient localhost »). Résultat testé :
+
+| Cible | Résultat |
+|---|---|
+| `http://exemple.com`, `http://192.168.1.10:8080` | refusé |
+| `http://localhost.evil.com` (piège : contient « localhost ») | refusé |
+| `http://localhost@evil.com` (piège : le vrai hôte est `evil.com`) | refusé |
+| `http://127.0.0.1:8080`, `http://localhost:8080` | accepté |
+
+### Les questions qu'on peut me poser
+
+**Pourquoi un compte créé par le script ?**
+Pour simuler une connexion réussie sans écrire de mot de passe dans le code : le
+script crée un compte jetable avec un mot de passe aléatoire (`secrets.token_urlsafe`).
+
+**Pourquoi le journal montre `%27` au lieu de `'` ?**
+Les caractères spéciaux sont *encodés* dans une URL : `'` = `%27`, `<` = `%3C`,
+espace = `+`. L'ETL devra **décoder** l'URL avant d'appliquer les règles, sinon la
+règle « apostrophe » ne verrait rien. Il faut aussi penser au **double encodage**
+(`%252e` = `%2e` = `.`), utilisé pour contourner les filtres naïfs.
+
+**Pourquoi il y a des 500 chez des visiteurs normaux ?**
+Un visiteur cherche `l'orange` : l'apostrophe casse la requête SQL de Juice Shop
+(c'est la vraie faille d'injection de l'application). Pour mon SIEM c'est un
+**faux positif** probable de la règle R2 : un humain normal peut taper une apostrophe.
+Je le note dans le rapport.
+
+**Pourquoi le scan a des 200 ?**
+Juice Shop renvoie la page d'accueil (200) pour `/admin.php` etc. (voir étape 1).
+Sur 100 pages du scan, seules 80 donnent un 404.
+
+### Les problèmes rencontrés (et ce que j'en ai appris)
+1. **Script très lent (2,3 s par requête)** : sous Windows, `localhost` essaie d'abord
+   l'IPv6 `::1`, où Docker n'écoute pas. Avec `127.0.0.1` : 0,02 s. Le script complet
+   passe de plusieurs minutes à moins d'une minute.
+2. **Journal « binaire »** : j'avais vidé `access.log` pendant que nginx l'avait ouvert.
+   nginx a continué d'écrire à sa position → 25 000 octets nuls au début. La bonne
+   méthode : supprimer le fichier puis redémarrer nginx (voir commandes).
+3. **Traversal avec l'IP de Docker** : quand le chemin décodé sort de la racine
+   (`/../../../etc/passwd`), nginx répond **400** dès la première ligne, *sans lire les
+   en-têtes* : il ne connaît ni la fausse IP ni le navigateur (`"-"`). La requête
+   n'arrive jamais à Juice Shop. Limite : pour ces lignes, l'IP n'est pas fiable.
+
+### Remettre le journal à zéro (Windows, cmd)
+```bash
+del logs\access.log
+docker compose restart nginx
+```
