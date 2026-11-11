@@ -1,0 +1,18 @@
+# Secrets : le vrai fichier .env n'est JAMAIS publié
+.env
+
+# Journaux nginx générés par le labo (re-créés à chaque lancement)
+logs/*
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Éditeurs / OS
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,52 @@
+# Laboratoire Mini-SIEM : tout se lance avec une seule commande
+#   docker compose up -d
+#
+# Schéma :  navigateur / attack_sim.py --> nginx (port 8080) --> juiceshop
+#                                            |
+#                                            +--> logs/access.log  (lu par l'ETL)
+
+services:
+
+  # Application cible, volontairement vulnérable (OWASP Juice Shop).
+  # Pas de "ports:" -> elle n'est PAS accessible directement depuis le PC,
+  # seul nginx peut lui parler (par le réseau interne de Docker).
+  juiceshop:
+    image: bkimminich/juice-shop:latest
+    container_name: siem_juiceshop
+    restart: unless-stopped
+
+  # Reverse proxy : reçoit toutes les requêtes, les transmet à Juice Shop
+  # et écrit une ligne par requête dans access.log.
+  nginx:
+    image: nginx:1.27
+    container_name: siem_nginx
+    depends_on:
+      - juiceshop
+    ports:
+      # 127.0.0.1 = seulement accessible depuis mon PC, pas depuis le réseau
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro   # notre configuration (lecture seule)
+      - ./logs:/logs                                  # access.log apparaît dans ./logs
+    restart: unless-stopped
+
+  # Entrepôt de données (staging + dw). Le mot de passe vient du fichier .env
+  postgres:
+    image: postgres:16
+    container_name: siem_postgres
+    environment:
+      POSTGRES_DB: ${PG_DB}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    ports:
+      - "127.0.0.1:${PG_PORT}:5432"
+    volumes:
+      - donnees_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  donnees_pg:
