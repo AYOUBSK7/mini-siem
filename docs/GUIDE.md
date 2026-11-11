@@ -460,3 +460,72 @@ c'est un choix assumé : une apostrophe seule est souvent légitime (`l'orange`,
 .venv\Scripts\python app\etl.py                 # d'abord charger les données
 .venv\Scripts\python app\detect.py              # puis détecter
 ```
+
+---
+
+## Étape 6 : l'API `app/api.py` (FastAPI)
+
+### Ce qu'on a fait
+Une API **en lecture seule**, lancée sur `127.0.0.1:8000` :
+
+| Route | Rôle | Exemple |
+|---|---|---|
+| `GET /` | vérifier que l'API répond | `{"projet": "Mini-SIEM", ...}` |
+| `GET /alertes` | dernières alertes, filtrables | `/alertes?gravite=haute&regle=R2_injection_sql&limite=10` |
+| `GET /stats` | chiffres pour le dashboard | totaux, alertes par règle / gravité / heure, top 10 des IP |
+| `GET /docs` | documentation **générée automatiquement** par FastAPI | on peut tester les routes dans le navigateur |
+
+```bash
+.venv\Scripts\python -m uvicorn api:app --app-dir app --host 127.0.0.1 --port 8000
+```
+
+### Les questions qu'on peut me poser
+
+**Pourquoi une API alors qu'on a déjà la base ?**
+Pour séparer les rôles : le dashboard (ou un autre outil) demande des données en HTTP/JSON
+sans connaître le mot de passe de la base ni la structure des tables. Si je change une
+table, je n'ai qu'à adapter l'API.
+
+**Votre API est-elle vulnérable à l'injection SQL ?** (question piège probable)
+Non. Les valeurs de l'utilisateur ne sont **jamais collées** dans le texte SQL : elles
+passent par des **paramètres** (`a.regle = :regle`) que le pilote PostgreSQL envoie
+séparément. Le seul texte assemblé (`WHERE ... AND ...`) est fait de morceaux **fixes**
+écrits par moi. Testé : `/alertes?ip=' OR 1=1--` renvoie `[]` (aucune IP ne s'appelle
+comme ça), et pas les 55 alertes.
+
+| Mauvais (vulnérable) | Bon (paramétré) |
+|---|---|
+| `f"WHERE ip = '{ip}'"` | `"WHERE ip = :ip"` + `{"ip": ip}` |
+
+**Que se passe-t-il si on envoie une valeur bizarre ?**
+FastAPI **valide** les entrées avant mon code, grâce aux annotations de type :
+`gravite` doit être `faible`, `moyenne` ou `haute` (`Literal`), `limite` entre 1 et 500
+(`Query(ge=1, le=500)`). Sinon : erreur **422** avec un message clair. La limite empêche
+aussi qu'un appel demande un million de lignes et surcharge la base.
+
+**Et si la base est arrêtée ?**
+Un gestionnaire d'erreur (`@app.exception_handler`) renvoie **503** avec
+« Base de données indisponible » au lieu d'une erreur 500 incompréhensible. Testé en
+arrêtant PostgreSQL : 503 ; après redémarrage : 200 sans relancer l'API.
+
+**C'est quoi `response_model=list[Alerte]` ?**
+Un modèle Pydantic qui décrit le format d'une alerte : FastAPI vérifie que la réponse le
+respecte et l'affiche dans `/docs`.
+
+**Pourquoi `/stats` lit seulement `dw` ?**
+C'est le rôle de l'entrepôt : servir l'analyse. `staging` est une zone de travail de l'ETL.
+
+### Les tests (`tests/test_api.py`, 7 tests → 29 au total)
+`TestClient` simule un navigateur sans lancer de serveur. Testés : format des alertes,
+filtre de gravité, valeurs refusées (422), **injection SQL dans le filtre**, et cohérence
+des stats (total = somme par règle = somme par gravité).
+Ces tests ont besoin de la base : si elle n'est pas joignable, ils sont **ignorés**
+(`skip`) au lieu d'échouer.
+
+Un avertissement s'affiche (`StarletteDeprecationWarning ... httpx`) : il vient de la
+bibliothèque FastAPI elle-même, pas de mon code ; ça n'empêche rien.
+
+### Les limites
+- **Pas d'authentification** : acceptable car l'API n'écoute que sur `127.0.0.1` ; avant
+  toute mise en ligne, il faudrait un jeton ou un mot de passe (hors périmètre).
+- **Pas de pagination** au-delà de 500 alertes.
