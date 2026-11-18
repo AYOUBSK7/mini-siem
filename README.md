@@ -120,7 +120,8 @@ mini-siem/
 ├── dashboard/      dashboard.py
 ├── sql/            schema.sql, staging_vers_dw.sql, requetes_analyse.sql
 ├── tests/          test_rules.py, test_api.py
-└── docs/           rapport.pdf, captures/
+├── docs/           rapport.pdf, captures/
+└── site/           page vitrine statique (Vercel), avec un instantané des résultats
 ```
 
 ---

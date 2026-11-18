@@ -1,0 +1,90 @@
+/* Vitrine Mini-SIEM : page statique, thème clair */
+:root {
+  --fond: #fcfcfb;
+  --carte: #ffffff;
+  --texte: #1f1f1d;
+  --gris: #52514e;
+  --bord: #e2e1dc;
+  --bleu: #1c5cab;
+  --bleu-clair: #eef4fc;
+}
+* { box-sizing: border-box; }
+html { color-scheme: light; }
+body {
+  margin: 0; background: var(--fond); color: var(--texte);
+  font: 16px/1.6 "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+}
+.conteneur { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+a { color: var(--bleu); }
+code { font-family: Consolas, "SFMono-Regular", monospace; font-size: .9em; background: #f0efea; padding: 0 .25em; border-radius: 3px; }
+
+/* En-tête */
+.entete { background: #11161d; color: #f0efec; padding: 56px 0 40px; }
+.sur { color: #86b6ef; letter-spacing: .18em; text-transform: uppercase; font-size: .8rem; font-weight: 700; margin: 0; }
+.entete h1 { font-size: clamp(2.4rem, 7vw, 3.6rem); margin: .2em 0 .3em; line-height: 1.1; }
+.accroche { font-size: 1.1rem; max-width: 760px; color: #d9d8d3; margin: 0 0 1.4em; }
+.boutons { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 1.6em; }
+.bouton { display: inline-block; padding: .65em 1.1em; border-radius: 8px; border: 1px solid #3a4250;
+          color: #f0efec; text-decoration: none; font-weight: 600; }
+.bouton.principal { background: #3987e5; border-color: #3987e5; }
+.bouton:hover { filter: brightness(1.12); }
+.avertissement { font-size: .9rem; color: #a9a8a2; max-width: 760px; margin: 0; border-left: 3px solid #3a4250; padding-left: 12px; }
+
+/* Sections */
+section { margin: 48px 0; }
+h2 { font-size: 1.6rem; margin: 0 0 .6em; }
+h3 { font-size: 1.1rem; margin: 0 0 .6em; }
+.note { color: var(--gris); font-size: .9rem; }
+.video { width: 100%; max-width: 720px; display: block; border-radius: 10px; background: #000; }
+
+.etapes { list-style: none; counter-reset: etape; padding: 0; margin: 0; display: grid; gap: 12px; }
+.etapes li { counter-increment: etape; display: grid; grid-template-columns: 44px 1fr; column-gap: 12px;
+             background: var(--carte); border: 1px solid var(--bord); border-radius: 10px; padding: 14px 16px; }
+.etapes li::before { content: counter(etape); grid-row: span 2; width: 34px; height: 34px; border-radius: 50%;
+                     background: var(--bleu-clair); color: var(--bleu); font-weight: 700; display: grid; place-items: center; }
+.etapes span { color: var(--gris); }
+
+/* Chiffres et graphiques */
+.chiffres { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+.chiffres div { background: var(--carte); border: 1px solid var(--bord); border-radius: 10px; padding: 14px 16px; }
+.chiffres span { display: block; font-size: 2rem; font-weight: 700; line-height: 1.2; }
+.chiffres small { color: var(--gris); }
+.grille { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.carte { background: var(--carte); border: 1px solid var(--bord); border-radius: 10px; padding: 16px; margin: 0 0 12px; }
+figure.carte { margin: 0 0 12px; }
+figcaption { font-weight: 600; margin-bottom: 8px; }
+.graphique { position: relative; height: 300px; }
+
+/* Tableaux */
+.defile { overflow-x: auto; }
+.defile.hauteur { max-height: 420px; overflow-y: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--bord); vertical-align: top; }
+th { background: #f6f5f2; position: sticky; top: 0; }
+td.nombre { text-align: right; white-space: nowrap; }
+td.preuve { font-family: Consolas, monospace; font-size: .85rem; word-break: break-all; min-width: 260px; }
+.barre { display: flex; align-items: center; gap: 8px; }
+.barre i { display: block; height: 8px; border-radius: 4px; background: #8a8984; }
+.pastille { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.gravite-haute { color: #b42318; font-weight: 600; }
+.gravite-moyenne { color: #9a5b00; font-weight: 600; }
+.gravite-faible { color: var(--gris); }
+.filtres { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 10px; }
+.filtres select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--bord); margin-left: 4px; }
+.regles { background: var(--carte); border: 1px solid var(--bord); border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
+
+.lecons { padding-left: 1.2em; }
+.lecons li { margin-bottom: .6em; }
+.captures { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.captures img { width: 100%; border: 1px solid var(--bord); border-radius: 8px; display: block; }
+.stack { color: var(--gris); }
+
+.pied { border-top: 1px solid var(--bord); padding: 24px 0 40px; color: var(--gris); font-size: .9rem; }
+
+/* Téléphone */
+@media (max-width: 720px) {
+  .chiffres { grid-template-columns: 1fr 1fr; }
+  .grille, .captures { grid-template-columns: 1fr; }
+  .graphique { height: 260px; }
+  .entete { padding: 40px 0 32px; }
+}

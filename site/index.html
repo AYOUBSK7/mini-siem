@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Mini-SIEM · Ayoub Boussoukaya</title>
+<meta name="description" content="Projet personnel : détecter des attaques web dans les logs d'un serveur nginx. ETL Python, PostgreSQL en étoile, règles testées, API FastAPI, dashboard.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="entete">
+  <div class="conteneur">
+    <p class="sur">Projet personnel · 2026</p>
+    <h1>Mini-SIEM</h1>
+    <p class="accroche">J'ai voulu savoir si on peut repérer des attaques web juste en lisant les logs d'un
+      serveur. J'ai donc monté un petit labo, généré du trafic normal et des attaques, puis construit la chaîne
+      complète : ETL, entrepôt de données, règles de détection testées, API et tableau de bord.</p>
+    <div class="boutons">
+      <a class="bouton principal" href="https://github.com/AYOUBSK7/mini-siem">Voir le code sur GitHub</a>
+      <a class="bouton" href="medias/rapport.pdf">Rapport d'une page (PDF)</a>
+    </div>
+    <p class="avertissement">Projet éducatif : tout a tourné en local sur mon PC, contre une application
+      volontairement vulnérable (OWASP Juice Shop). Aucune cible réelle n'a été attaquée. Cette page est une
+      vitrine statique : elle montre un instantané des résultats, sans aucun serveur derrière.</p>
+  </div>
+</header>
+
+<main class="conteneur">
+
+  <section>
+    <h2>La démo en une minute</h2>
+    <video class="video" controls preload="metadata" playsinline poster="medias/dashboard.png">
+      <source src="medias/demo.mp4" type="video/mp4">
+    </video>
+  </section>
+
+  <section>
+    <h2>Comment ça marche</h2>
+    <ol class="etapes">
+      <li><strong>Le labo</strong><span>Juice Shop derrière nginx, dans Docker. nginx écrit une ligne par requête
+        dans <code>access.log</code>. Tout est lié à <code>127.0.0.1</code>.</span></li>
+      <li><strong>Le trafic</strong><span><code>attack_sim.py</code> envoie 200 visites normales et 5 attaques :
+        brute force, injection SQL, XSS, scan de pages, remontée de dossiers. Il refuse toute cible qui n'est pas
+        localhost.</span></li>
+      <li><strong>L'ETL</strong><span>Python et pandas lisent le journal avec une regex, décodent les URL
+        (<code>%27</code> devient <code>'</code>) et chargent PostgreSQL : une zone <em>staging</em>, puis un
+        schéma en étoile.</span></li>
+      <li><strong>La détection</strong><span>5 règles, par comptage (trop de 401 ou de 404 par IP et par minute)
+        ou par motif dans l'URL. 30 tests pytest.</span></li>
+      <li><strong>La restitution</strong><span>Une API FastAPI aux requêtes SQL paramétrées, et un dashboard
+        Streamlit. Ci-dessous, le même dashboard en version statique.</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Les résultats du labo</h2>
+    <p class="note">Instantané des vraies données du labo. Heures en UTC.</p>
+    <div class="chiffres">
+      <div><span id="k-requetes">–</span><small>requêtes analysées</small></div>
+      <div><span id="k-ip">–</span><small>adresses IP</small></div>
+      <div><span id="k-alertes">–</span><small>alertes</small></div>
+      <div><span id="k-hautes">–</span><small>alertes hautes</small></div>
+    </div>
+
+    <div class="grille">
+      <figure class="carte">
+        <figcaption>Alertes par règle</figcaption>
+        <div class="graphique"><canvas id="g-regles" aria-label="Alertes par règle"></canvas></div>
+      </figure>
+      <figure class="carte">
+        <figcaption>Alertes par heure</figcaption>
+        <div class="graphique"><canvas id="g-heures" aria-label="Alertes par heure et par règle"></canvas></div>
+      </figure>
+    </div>
+
+    <div class="carte">
+      <h3>Top 10 des IP qui déclenchent le plus d'alertes</h3>
+      <div class="defile"><table id="t-ip">
+        <thead><tr><th>Adresse IP</th><th>Alertes</th><th>Requêtes</th><th>Règles</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <p class="note">Les adresses sont fictives (plages réservées à la documentation). <code>172.22.0.1</code> est
+        l'adresse interne de Docker : nginx a rejeté ces requêtes avant de lire l'IP simulée. C'est une des
+        limites que j'ai notées.</p>
+    </div>
+
+    <div class="carte">
+      <h3>Les alertes et leur preuve</h3>
+      <div class="filtres">
+        <label>Règle <select id="f-regle"><option value="">toutes</option></select></label>
+        <label>Gravité <select id="f-gravite"><option value="">toutes</option>
+          <option value="haute">haute</option><option value="moyenne">moyenne</option><option value="faible">faible</option>
+        </select></label>
+        <span id="f-compte" class="note"></span>
+      </div>
+      <div class="defile hauteur"><table id="t-alertes">
+        <thead><tr><th>Heure (UTC)</th><th>Règle</th><th>Gravité</th><th>IP</th><th>Preuve</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Les règles</h2>
+    <table class="regles">
+      <thead><tr><th>Règle</th><th>Ce qu'elle cherche</th><th>Gravité</th></tr></thead>
+      <tbody>
+        <tr><td>R1 brute force</td><td>plus de 10 réponses 401 sur la page de connexion, même IP, même minute</td><td>haute</td></tr>
+        <tr><td>R2 injection SQL</td><td><code>' OR 1=1</code>, <code>UNION SELECT</code>, <code>--</code>… dans l'URL décodée ; une apostrophe seule donne une alerte faible</td><td>haute / faible</td></tr>
+        <tr><td>R3 XSS</td><td><code>&lt;script</code>, <code>javascript:</code>, <code>onerror=</code>…</td><td>moyenne</td></tr>
+        <tr><td>R4 scan</td><td>plus de 30 réponses 404, même IP, même minute</td><td>moyenne</td></tr>
+        <tr><td>R5 remontée de dossiers</td><td><code>../</code>, même encodé deux fois (<code>%252e%252e%252f</code>)</td><td>haute</td></tr>
+      </tbody>
+    </table>
+    <p>Chaque règle a ses tests : une ligne de log qui doit déclencher l'alerte, une ligne normale qui ne doit pas,
+      et les seuils testés pile à la limite (10 échecs : rien ; 11 : alerte).</p>
+  </section>
+
+  <section>
+    <h2>Ce que j'en retiens</h2>
+    <ul class="lecons">
+      <li><strong>Un log ne voit pas tout.</strong> nginx n'écrit pas le corps des requêtes POST : une injection
+        envoyée dans un formulaire est invisible.</li>
+      <li><strong>Une IP, ça se falsifie.</strong> Ici les IP viennent de l'en-tête <code>X-Forwarded-For</code>,
+        pratique en labo, mais à ne croire que d'un proxy connu en production.</li>
+      <li><strong>Les faux positifs existent.</strong> Chercher « l'orange » ressemble à une injection SQL à cause
+        de l'apostrophe : 36 alertes de ce type, que j'ai classées en gravité faible plutôt que d'ignorer les
+        apostrophes.</li>
+      <li><strong>Compter par minute fixe a un trou.</strong> 8 échecs à 16:49:55 puis 8 à 16:50:05 ne déclenchent
+        rien. Une fenêtre glissante de 60 s corrigerait ça.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Captures</h2>
+    <div class="captures">
+      <a href="medias/dashboard.png"><img src="medias/dashboard.png" alt="Dashboard Streamlit : chiffres clés et graphiques" loading="lazy"></a>
+      <a href="medias/alertes.png"><img src="medias/alertes.png" alt="Top 10 des IP et dernières alertes" loading="lazy"></a>
+      <a href="medias/api.png"><img src="medias/api.png" alt="Documentation de l'API FastAPI" loading="lazy"></a>
+      <a href="medias/tests.png"><img src="medias/tests.png" alt="30 tests pytest qui passent" loading="lazy"></a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Technologies</h2>
+    <p class="stack">Docker Compose · nginx · OWASP Juice Shop · Python · pandas · PostgreSQL (schéma en étoile) ·
+      FastAPI · Streamlit · pytest</p>
+  </section>
+
+</main>
+
+<footer class="pied">
+  <div class="conteneur">
+    Ayoub Boussoukaya · projet personnel, 2026 ·
+    <a href="https://github.com/AYOUBSK7/mini-siem">github.com/AYOUBSK7/mini-siem</a>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
